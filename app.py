@@ -14,19 +14,18 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 API_URL = "https://www.sheinindia.in/api/category/sverse-5939-37961?fields=SITE&currentPage=1&pageSize=45&format=json&query=%3Arelevance&gridColumns=5&advfilter=true&platform=Desktop&showAdsOnNextPage=false&is_ads_enable_plp=true&displayRatings=true&segmentIds=&&store=shein"
 
-CHECK_INTERVAL = 120  # seconds
-
+CHECK_INTERVAL = 120
 DATA_FILE = "products.json"
 
 # ==========================
-# FLASK KEEP-ALIVE
+# FLASK (Railway Keep Alive)
 # ==========================
 
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "SHEINVERSE API BOT Running"
+    return "SHEINVERSE BOT RUNNING"
 
 def run_web():
     app.run(host="0.0.0.0", port=8000)
@@ -62,8 +61,8 @@ def send_message(text):
             "parse_mode": "HTML"
         }
         requests.post(url, data=payload, timeout=10)
-    except:
-        pass
+    except Exception as e:
+        print("Telegram error:", e)
 
 def send_photo(caption, image_url):
     try:
@@ -75,8 +74,8 @@ def send_photo(caption, image_url):
             "parse_mode": "HTML"
         }
         requests.post(url, data=payload, timeout=15)
-    except:
-        pass
+    except Exception as e:
+        print("Telegram photo error:", e)
 
 # ==========================
 # VOUCHER LOGIC
@@ -88,16 +87,48 @@ def voucher_text(price):
     elif price < 1000:
         return "🎟 Use ₹1000 Voucher"
     else:
-        return "❌ No Voucher"
+        return "🎟 Eligible for ₹1000 Voucher"
 
 # ==========================
-# MONITOR
+# FETCH SIZE AVAILABILITY
 # ==========================
+
+def fetch_available_sizes(product_code):
+    try:
+        detail_url = f"https://www.sheinindia.in/api/product/{product_code}?fields=FULL&format=json"
+        r = requests.get(detail_url, timeout=15)
+        detail = r.json()
+
+        sizes = set()
+
+        variants = detail.get("variants") or detail.get("skuList") or []
+
+        for v in variants:
+            size = v.get("size") or v.get("sizeName") or v.get("value")
+            in_stock = v.get("inStock")
+
+            if size:
+                if in_stock is None:
+                    sizes.add(size)
+                elif in_stock:
+                    sizes.add(size)
+
+        return sizes
+
+    except Exception as e:
+        print("Size fetch error:", e)
+        return set()
+
+# ==========================
+# MONITOR LOOP
+# ==========================
+
+print("🚀 Bot Started")
 
 while True:
     try:
-        resp = requests.get(API_URL, timeout=30)
-        data = resp.json()
+        response = requests.get(API_URL, timeout=30)
+        data = response.json()
 
         products = data.get("products", [])
 
@@ -105,9 +136,14 @@ while True:
 
             code = str(p.get("code"))
             name = p.get("name")
-            price = p.get("offerPrice", {}).get("value") or p.get("price", {}).get("value", 0)
-            image = None
 
+            price = (
+                p.get("offerPrice", {}).get("value")
+                or p.get("price", {}).get("value")
+                or 0
+            )
+
+            image = None
             imgs = p.get("images", [])
             if imgs:
                 image = imgs[0].get("url")
@@ -115,46 +151,74 @@ while True:
             link_path = p.get("url")
             link = "https://www.sheinindia.in" + link_path
 
-            in_stock = True  # API returns only in-stock products
+            current_sizes = fetch_available_sizes(code)
 
-            prev = stored_products.get(code)
+            previous_data = stored_products.get(code)
 
-            # 🚀 NEW PRODUCT
+            # ======================
+            # NEW PRODUCT
+            # ======================
             if code not in stored_products:
-                stored_products[code] = in_stock
+
+                stored_products[code] = {
+                    "sizes": list(current_sizes)
+                }
                 save_data(stored_products)
 
                 caption = f"""🆕 <b>NEW PRODUCT</b>
 
-🛍 {name}
+🛍 <b>{name}</b>
 💰 ₹{price}
+📦 Sizes: {", ".join(current_sizes) if current_sizes else "Available"}
+
 {voucher_text(price)}
 
-🔗 <a href="{link}">Open Product</a>"""
+🔗 {link}
+"""
 
-                send_photo(caption, image)
+                if image:
+                    send_photo(caption, image)
+                else:
+                    send_message(caption)
 
-            # 🔁 RESTOCK
-            elif prev == False and in_stock == True:
-                stored_products[code] = True
+            # ======================
+            # EXISTING PRODUCT
+            # ======================
+            else:
+
+                old_sizes = set(previous_data.get("sizes", []))
+
+                sold_out = old_sizes - current_sizes
+                restocked = current_sizes - old_sizes
+
+                # SIZE SOLD OUT
+                if sold_out:
+                    message = f"""⚠️ <b>SIZE SOLD OUT</b>
+
+🛍 <b>{name}</b>
+❌ Sold Out: {", ".join(sold_out)}
+
+🔗 {link}
+"""
+                    send_message(message)
+
+                # SIZE RESTOCK
+                if restocked:
+                    message = f"""🔁 <b>SIZE RESTOCKED</b>
+
+🛍 <b>{name}</b>
+✅ Restocked: {", ".join(restocked)}
+
+🔗 {link}
+"""
+                    send_message(message)
+
+                # Update stored sizes
+                stored_products[code]["sizes"] = list(current_sizes)
                 save_data(stored_products)
 
-                caption = f"""🔁 <b>RESTOCK ALERT!</b>
-
-🛍 {name}
-💰 ₹{price}
-{voucher_text(price)}
-
-🔗 <a href="{link}">Open Product</a>"""
-
-                send_photo(caption, image)
-
-            else:
-                stored_products[code] = in_stock
-
-        # WAIT
         time.sleep(CHECK_INTERVAL)
 
     except Exception as e:
-        print("Error:", e)
+        print("Main loop error:", e)
         time.sleep(10)
