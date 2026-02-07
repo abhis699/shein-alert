@@ -102,7 +102,7 @@ async def monitor():
                         "--single-process"
                     ]
                 )
-
+                print("monitor is running...")
                 page = await browser.new_page()
 
                 async def handle_response(response):
@@ -112,7 +112,7 @@ async def monitor():
                             products = data.get("info", {}).get("products", [])
 
                             for product in products:
-
+                                print("product fetched:", len(products))
                                 product_id = str(product.get("goods_id"))
                                 name = product.get("goods_name")
                                 price = int(float(product.get("salePrice", 0)))
